@@ -107,15 +107,26 @@ function wasPreviousResponseTruncated(messages: Message[]): boolean {
 
 const profileArnCache = new Map<string, string>();
 const profileArnPending = new Set<string>();
+/**
+ * When true, `resolveProfileArn` is a no-op. Tests that don't mock the
+ * ListAvailableProfiles endpoint flip this on to avoid firing a real request.
+ */
+let profileArnSkipResolution = false;
 
-export function resetProfileArnCache(preResolved = false): void {
+/**
+ * Reset cache state. Pass `skipResolution: true` to disable profileArn lookup
+ * entirely (useful for tests that don't mock ListAvailableProfiles).
+ * Production code should never pass true — cache is reset on logout/refresh
+ * without disabling resolution.
+ */
+export function resetProfileArnCache(skipResolution = false): void {
   profileArnCache.clear();
   profileArnPending.clear();
-  if (preResolved) profileArnPending.add("__all__");
+  profileArnSkipResolution = skipResolution;
 }
 
 async function resolveProfileArn(accessToken: string, endpoint: string): Promise<string | undefined> {
-  if (profileArnPending.has("__all__")) return undefined;
+  if (profileArnSkipResolution) return undefined;
   const cached = profileArnCache.get(endpoint);
   if (cached !== undefined) return cached;
   if (profileArnPending.has(endpoint)) return undefined;
@@ -538,12 +549,21 @@ export function streamKiro(
           let readResult: ReadResult;
           if (!gotFirstToken) {
             const readPromise = reader.read() as Promise<ReadResult>;
+            let firstTokenTimer: ReturnType<typeof setTimeout> | null = null;
             const result = await Promise.race([
               readPromise,
-              new Promise<typeof FIRST_TOKEN_SENTINEL>((resolve) =>
-                setTimeout(() => resolve(FIRST_TOKEN_SENTINEL), firstTokenTimeoutForModel(model.id)),
-              ),
+              new Promise<typeof FIRST_TOKEN_SENTINEL>((resolve) => {
+                firstTokenTimer = setTimeout(
+                  () => resolve(FIRST_TOKEN_SENTINEL),
+                  firstTokenTimeoutForModel(model.id),
+                );
+              }),
             ]);
+            // Always clear the timer — otherwise the happy path keeps the
+            // event loop alive for firstTokenTimeout ms after the stream
+            // ends, which for opus-4-7 (180s) is user-visible as a hang
+            // before a short-lived CLI exits.
+            if (firstTokenTimer) clearTimeout(firstTokenTimer);
             if (result === FIRST_TOKEN_SENTINEL) {
               readPromise.catch(() => {});
               void reader.cancel().catch(() => {});
@@ -645,6 +665,10 @@ export function streamKiro(
               `stream ${firstTokenTimedOut ? "first-token timed out" : idleCancelled ? "idle timed out" : `error: ${streamError}`} — retrying (${retryCount}/${MAX_RETRIES})`,
             );
             await abortableDelay(delayMs, options?.signal);
+            // Reset output content. Consumer-side `partial.content[contentIndex]`
+            // (see pi-agent-core proxy.js) uses indexed assignment, so when the
+            // retry re-emits `text_start` at contentIndex 0 it overwrites the
+            // stale block — consumer state stays in sync with ours.
             output.content = [];
             textBlockIndex = null;
             continue;
@@ -700,6 +724,10 @@ export function streamKiro(
           log.warn(`empty response persisted after ${MAX_RETRIES} retries`);
         }
 
+        // Stop reason classification per doc/conformance.md §35–37:
+        // toolUse when tools were called; length when no contextUsage event
+        // was received AND no tool calls (treated as truncation signal); stop
+        // otherwise.
         if (!receivedContextUsage && emittedToolCalls === 0) {
           output.stopReason = "length";
         } else {

@@ -75,6 +75,12 @@ export function sanitizeHistory(history: KiroHistoryEntry[]): KiroHistoryEntry[]
  * Size-budgeted truncation. Strips images first (cheap win), then shifts the
  * oldest entry and re-sanitizes until JSON size is under `limit`. Callers
  * should scale `limit` to the model's context window.
+ *
+ * Edge case: a 2-entry history that still exceeds `limit` after image
+ * stripping passes through unchanged (the `length > 2` guard). The stream
+ * orchestrator's 413 / `context_length_exceeded` retry path handles the
+ * resulting server rejection — we trade one wasted round-trip for simpler
+ * truncation logic.
  */
 export function truncateHistory(history: KiroHistoryEntry[], limit: number): KiroHistoryEntry[] {
   let sanitized = sanitizeHistory(stripHistoryImages(history));

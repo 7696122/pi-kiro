@@ -83,6 +83,7 @@ describe("streamKiro", () => {
       streamKiro(makeModel(), makeContext(), { apiKey: "t", signal: ac.signal }),
     );
     const err = events.find((e) => e.type === "error");
+    expect(err).toBeDefined();
     if (err?.type === "error") {
       expect(err.error.stopReason).toBe("aborted");
     }
@@ -124,6 +125,7 @@ describe("streamKiro", () => {
     vi.stubGlobal("fetch", mockFetchOk(`${toolPayload}{"contextUsagePercentage":20}`));
     const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
     const done = events.find((e) => e.type === "done");
+    expect(done).toBeDefined();
     if (done?.type === "done") expect(done.reason).toBe("toolUse");
   });
 
@@ -131,6 +133,7 @@ describe("streamKiro", () => {
     vi.stubGlobal("fetch", mockFetchOk('{"content":"Partial"}'));
     const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
     const done = events.find((e) => e.type === "done");
+    expect(done).toBeDefined();
     if (done?.type === "done") expect(done.reason).toBe("length");
   });
 
@@ -144,6 +147,7 @@ describe("streamKiro", () => {
     vi.stubGlobal("fetch", fetchMock);
     const events = await collect(streamKiro(makeModel(), makeContext(), { apiKey: "tok" }));
     const err = events.find((e) => e.type === "error");
+    expect(err).toBeDefined();
     if (err?.type === "error") {
       expect(err.error.errorMessage).toMatch(/context_length_exceeded/);
     }

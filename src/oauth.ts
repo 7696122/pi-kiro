@@ -23,6 +23,7 @@
 // the top of `showPrompt`, or allocate a new Input per call.
 
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@mariozechner/pi-ai";
+import { log } from "./debug";
 
 export const BUILDER_ID_START_URL = "https://view.awsapps.com/start";
 export const BUILDER_ID_REGION = "us-east-1";
@@ -162,17 +163,40 @@ async function pollForToken(
     if (signal?.aborted) throw new Error("Login cancelled");
     await abortableDelay(interval, signal);
 
-    const resp = await fetch(`${oidcEndpoint}/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "User-Agent": "pi-kiro" },
-      body: JSON.stringify({
-        clientId,
-        clientSecret,
-        deviceCode: devAuth.deviceCode,
-        grantType: "urn:ietf:params:oauth:grant-type:device_code",
-      }),
-    });
-    const data = (await resp.json()) as TokenResponse;
+    // Any transient failure (network, 5xx, non-JSON body) is treated like
+    // `authorization_pending` — we keep polling until the deadline. The OIDC
+    // token endpoint occasionally returns HTML error pages under load; those
+    // should not abort a still-valid device code.
+    let resp: Response;
+    try {
+      resp = await fetch(`${oidcEndpoint}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": "pi-kiro" },
+        body: JSON.stringify({
+          clientId,
+          clientSecret,
+          deviceCode: devAuth.deviceCode,
+          grantType: "urn:ietf:params:oauth:grant-type:device_code",
+        }),
+      });
+    } catch {
+      continue;
+    }
+
+    // 5xx → transient, keep polling.
+    if (resp.status >= 500) continue;
+
+    let data: TokenResponse;
+    try {
+      data = (await resp.json()) as TokenResponse;
+    } catch {
+      // Non-JSON body (HTML error page, empty, etc.) — treat as transient
+      // unless the status itself is a hard 4xx we can't interpret.
+      if (!resp.ok) {
+        throw new Error(`Authorization failed: HTTP ${resp.status}`);
+      }
+      continue;
+    }
 
     if (!data.error && data.accessToken && data.refreshToken) return data;
     if (data.error === "authorization_pending") continue;
@@ -295,6 +319,12 @@ export async function refreshKiroToken(
   const inputMethod = (credentials as Partial<KiroCredentials>).authMethod;
   const authMethod: "builder-id" | "idc" =
     inputMethod === "builder-id" || inputMethod === "idc" ? inputMethod : "idc";
+  if (inputMethod !== undefined && inputMethod !== "builder-id" && inputMethod !== "idc") {
+    // Corrupt or migrated-badly credential. Refresh still works because both
+    // methods hit the same endpoint, but future code branching on authMethod
+    // would get the wrong answer.
+    log.warn(`refreshKiroToken: unrecognized authMethod "${String(inputMethod)}" — defaulting to "idc"`);
+  }
 
   if (!refreshToken || !clientId || !clientSecret || !region) {
     throw new Error(
@@ -313,13 +343,16 @@ export async function refreshKiroToken(
   const data = (await resp.json()) as {
     accessToken: string;
     refreshToken: string;
-    expiresIn: number;
+    expiresIn?: number;
   };
 
   return {
     refresh: `${data.refreshToken}|${clientId}|${clientSecret}|${authMethod}`,
     access: data.accessToken,
-    expires: Date.now() + data.expiresIn * 1000 - EXPIRES_BUFFER_MS,
+    // Mirror loginKiro: fall back to 1h if the server omits expiresIn. Without
+    // this guard a missing field yields `expires: NaN`, which compares false
+    // against every timestamp and forces a refresh on every subsequent call.
+    expires: Date.now() + (data.expiresIn ?? 3600) * 1000 - EXPIRES_BUFFER_MS,
     clientId,
     clientSecret,
     region,

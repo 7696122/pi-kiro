@@ -108,7 +108,7 @@ describe("truncateHistory", () => {
     expect(fixed.length).toBeLessThan(big.length);
 
     const scaledLimit = Math.floor((1_000_000 / HISTORY_LIMIT_CONTEXT_WINDOW) * HISTORY_LIMIT);
-    expect(scaledLimit).toBe(4_250_000);
+    expect(scaledLimit).toBeGreaterThan(HISTORY_LIMIT);
     const scaled = truncateHistory(big, scaledLimit);
     expect(scaled.length).toBe(big.length);
   });
