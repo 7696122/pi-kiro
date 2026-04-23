@@ -16,16 +16,13 @@ import type {
   ToolResultMessage,
 } from "@mariozechner/pi-ai";
 
-// Inlined from pi-ai's utils/sanitize-unicode (not re-exported at the root
-// of the current pi-ai version). ~5 lines; keeps this module self-contained.
-/**
- * Strip unpaired Unicode surrogates. Properly paired surrogates (e.g. emoji)
- * are preserved; unpaired ones break JSON encoding on many API servers.
- */
-export function sanitizeSurrogates(text: string): string {
-  return text.replace(
-    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g,
-    "",
+/** Drop assistant messages that ended in error/aborted — partial turns
+ *  shouldn't be replayed. */
+export function normalizeMessages(messages: Message[]): Message[] {
+  return messages.filter(
+    (msg) =>
+      msg.role !== "assistant" ||
+      (msg.stopReason !== "error" && msg.stopReason !== "aborted"),
   );
 }
 
@@ -85,14 +82,6 @@ export function truncate(text: string, limit: number): string {
   return `${text.substring(0, half)}\n... [TRUNCATED] ...\n${text.substring(text.length - half)}`;
 }
 
-/** Drop assistant messages that ended in error/aborted — they may be partial. */
-export function normalizeMessages(messages: Message[]): Message[] {
-  return messages.filter((msg) => {
-    if (msg.role !== "assistant") return true;
-    return msg.stopReason !== "error" && msg.stopReason !== "aborted";
-  });
-}
-
 export function extractImages(msg: Message): ImageContent[] {
   if (msg.role === "toolResult" || typeof msg.content === "string") return [];
   if (!Array.isArray(msg.content)) return [];
@@ -112,6 +101,21 @@ export function getContentText(msg: Message): string {
       return "";
     })
     .join("");
+}
+
+/**
+ * Parse tool-call arguments defensively. Historical messages (including
+ * those from other providers via cross-provider handoff) may carry args
+ * that aren't valid JSON. Fall back to {} rather than crashing the stream.
+ */
+export function parseToolArgs(input: unknown): Record<string, unknown> {
+  if (input && typeof input === "object") return input as Record<string, unknown>;
+  if (typeof input !== "string") return {};
+  try {
+    return JSON.parse(input) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
 }
 
 export function convertToolsToKiro(tools: Tool[]): KiroToolSpec[] {
@@ -177,7 +181,7 @@ export function buildHistory(
       }
       const images = extractImages(msg);
       const uim: KiroUserInputMessage = {
-        content: sanitizeSurrogates(content),
+        content,
         modelId,
         origin: "KIRO_CLI",
         ...(images.length > 0 ? { images: convertImagesToKiro(images) } : {}),
@@ -210,10 +214,7 @@ export function buildHistory(
             armToolUses.push({
               name: tc.name,
               toolUseId: tc.id,
-              input:
-                typeof tc.arguments === "string"
-                  ? (JSON.parse(tc.arguments) as Record<string, unknown>)
-                  : (tc.arguments as Record<string, unknown>),
+              input: parseToolArgs(tc.arguments),
             });
           }
         }

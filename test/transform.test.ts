@@ -13,7 +13,6 @@ import {
   convertToolsToKiro,
   getContentText,
   normalizeMessages,
-  sanitizeSurrogates,
   TOOL_RESULT_LIMIT,
   truncate,
 } from "../src/transform";
@@ -49,16 +48,6 @@ const toolResult = (id: string, text: string, isError = false): ToolResultMessag
   content: [{ type: "text", text }],
   isError,
   timestamp: ts,
-});
-
-describe("sanitizeSurrogates", () => {
-  it("strips unpaired surrogates", () => {
-    expect(sanitizeSurrogates("a\uD800b")).toBe("ab");
-    expect(sanitizeSurrogates("a\uDC00b")).toBe("ab");
-  });
-  it("preserves valid emoji", () => {
-    expect(sanitizeSurrogates("Hello 🙈 World")).toBe("Hello 🙈 World");
-  });
 });
 
 describe("truncate", () => {

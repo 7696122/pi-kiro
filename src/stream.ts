@@ -18,7 +18,6 @@ import type {
 import { calculateCost, createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { log } from "./debug";
 import { parseKiroEvents } from "./event-parser";
-import { addPlaceholderTools, HISTORY_LIMIT, HISTORY_LIMIT_CONTEXT_WINDOW, truncateHistory } from "./history";
 import type { KiroModel } from "./models";
 import { kiroModels, resolveKiroModel } from "./models";
 import { ThinkingTagParser } from "./thinking-parser";
@@ -35,7 +34,7 @@ import {
   type KiroToolSpec,
   type KiroUserInputMessage,
   normalizeMessages,
-  sanitizeSurrogates,
+  parseToolArgs,
   TOOL_RESULT_LIMIT,
   truncate,
 } from "./transform";
@@ -54,9 +53,6 @@ const CAPACITY_MAX_DELAY_MS = 30_000;
 const TOO_BIG_PATTERNS = ["CONTENT_LENGTH_EXCEEDS_THRESHOLD", "Input is too long", "Improperly formed"];
 const NON_RETRYABLE_BODY_PATTERNS = ["MONTHLY_REQUEST_COUNT"];
 const CAPACITY_PATTERN = "INSUFFICIENT_MODEL_CAPACITY";
-
-const TRUNCATION_NOTICE =
-  "[NOTE: Your previous response was cut off due to length limits. Please continue from where you left off.]";
 
 function exponentialBackoff(attempt: number, baseMs: number, maxMs: number): number {
   return Math.min(baseMs * 2 ** attempt, maxMs);
@@ -94,19 +90,9 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function wasPreviousResponseTruncated(messages: Message[]): boolean {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "assistant") {
-      return (messages[i] as AssistantMessage).stopReason === "length";
-    }
-  }
-  return false;
-}
-
 // ---- profileArn cache --------------------------------------------------
 
 const profileArnCache = new Map<string, string>();
-const profileArnPending = new Set<string>();
 /**
  * When true, `resolveProfileArn` is a no-op. Tests that don't mock the
  * ListAvailableProfiles endpoint flip this on to avoid firing a real request.
@@ -121,7 +107,6 @@ let profileArnSkipResolution = false;
  */
 export function resetProfileArnCache(skipResolution = false): void {
   profileArnCache.clear();
-  profileArnPending.clear();
   profileArnSkipResolution = skipResolution;
 }
 
@@ -129,7 +114,6 @@ async function resolveProfileArn(accessToken: string, endpoint: string): Promise
   if (profileArnSkipResolution) return undefined;
   const cached = profileArnCache.get(endpoint);
   if (cached !== undefined) return cached;
-  if (profileArnPending.has(endpoint)) return undefined;
 
   try {
     const ep = new URL(endpoint);
@@ -285,15 +269,10 @@ export function streamKiro(
 
         const normalized = normalizeMessages(context.messages);
         const {
-          history: rawHistory,
+          history,
           systemPrepended,
           currentMsgStartIdx,
         } = buildHistory(normalized, kiroModelId, systemPrompt);
-
-        const dynamicHistoryLimit = Math.floor(
-          (model.contextWindow / HISTORY_LIMIT_CONTEXT_WINDOW) * HISTORY_LIMIT,
-        );
-        const history = truncateHistory(rawHistory, dynamicHistoryLimit);
 
         const currentMessages = normalized.slice(currentMsgStartIdx);
         const firstMsg = currentMessages[0];
@@ -316,10 +295,7 @@ export function streamKiro(
                 armToolUses.push({
                   name: tc.name,
                   toolUseId: tc.id,
-                  input:
-                    typeof tc.arguments === "string"
-                      ? (JSON.parse(tc.arguments) as Record<string, unknown>)
-                      : (tc.arguments as Record<string, unknown>),
+                  input: parseToolArgs(tc.arguments),
                 });
               }
             }
@@ -395,18 +371,12 @@ export function streamKiro(
           }
         }
 
-        if (wasPreviousResponseTruncated(context.messages)) {
-          currentContent = `${TRUNCATION_NOTICE}\n\n${currentContent}`;
-        }
-
         let uimc: { toolResults?: KiroToolResult[]; tools?: KiroToolSpec[] } | undefined;
         if (currentToolResults.length > 0 || (context.tools && context.tools.length > 0)) {
           uimc = {};
           if (currentToolResults.length > 0) uimc.toolResults = currentToolResults;
           if (context.tools?.length) {
-            let kt = convertToolsToKiro(context.tools);
-            if (history.length > 0) kt = addPlaceholderTools(kt, history);
-            uimc.tools = kt;
+            uimc.tools = convertToolsToKiro(context.tools);
           }
         }
 
@@ -422,7 +392,7 @@ export function streamKiro(
             conversationId,
             currentMessage: {
               userInputMessage: {
-                content: sanitizeSurrogates(currentContent),
+                content: currentContent,
                 modelId: kiroModelId,
                 origin: "KIRO_CLI",
                 ...(currentImages ? { images: currentImages } : {}),
@@ -498,6 +468,16 @@ export function streamKiro(
           }
           if (isTooBigError(response.status, errText)) {
             throw new Error(`Kiro API error: context_length_exceeded (${response.status} ${errText})`);
+          }
+          if (response.status === 403) {
+            // Access token was accepted earlier (profileArn resolved) but is
+            // now rejected — drift, revocation, or server-side invalidation.
+            // Bust the profileArn cache so the next attempt re-resolves with
+            // a fresh token, and surface a clear re-login hint.
+            profileArnCache.delete(endpoint);
+            throw new Error(
+              `Kiro API error: access token rejected (403) — run /login kiro to re-authenticate. ${errText}`,
+            );
           }
           throw new Error(`Kiro API error: ${response.status} ${response.statusText} ${errText}`);
         }
@@ -589,7 +569,6 @@ export function streamKiro(
               case "contextUsage": {
                 const pct = event.data.contextUsagePercentage;
                 output.usage.input = Math.round((pct / 100) * model.contextWindow);
-                (output.usage as unknown as Record<string, unknown>).contextPercent = pct;
                 receivedContextUsage = true;
                 break;
               }

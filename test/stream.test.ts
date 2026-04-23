@@ -234,38 +234,6 @@ describe("streamKiro", () => {
     );
   });
 
-  it("prepends truncation notice when prior assistant had stopReason: length", async () => {
-    const fetchMock = mockFetchOk('{"content":"Hi"}{"contextUsagePercentage":5}');
-    vi.stubGlobal("fetch", fetchMock);
-    const ctx: Context = {
-      messages: [
-        { role: "user", content: "first", timestamp: Date.now() },
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "partial..." }],
-          api: "kiro-api",
-          provider: "kiro",
-          model: "test",
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            totalTokens: 0,
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-          },
-          stopReason: "length",
-          timestamp: Date.now(),
-        },
-        { role: "user", content: "Continue", timestamp: Date.now() },
-      ],
-    };
-    await collect(streamKiro(makeModel(), ctx, { apiKey: "tok" }));
-    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
-    const content = body.conversationState.currentMessage.userInputMessage.content as string;
-    expect(content).toContain("[NOTE: Your previous response was cut off");
-  });
-
   it("emits stream-level error when response body has error event", async () => {
     const errorBody = '{"error":"ThrottlingException","message":"Rate limit"}';
     // Stream error triggers outer-loop retries. Provide 4 identical responses
