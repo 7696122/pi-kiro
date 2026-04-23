@@ -36,7 +36,7 @@ pi-kiro/
 │   ├── event-parser.ts     (3) Kiro JSON frame extractor.
 │   ├── thinking-parser.ts  (3) Splits inline <thinking> tags into
 │   │                       structured ThinkingContent blocks.
-│   ├── tokenizer.ts        tiktoken fallback when usage event is absent.
+│   ├── tokenizer.ts        ~4-chars/token heuristic when usage event absent.
 │   └── debug.ts            Leveled logger gated by KIRO_LOG.
 └── test/
     ├── <per-module>.test.ts

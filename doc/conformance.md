@@ -79,7 +79,9 @@ item numbers in comments.
 32. `contextUsagePercentage` → `usage.input`:
     `Math.round((pct/100) * contextWindow)`; `contextPercent` exposed on usage.
 33. Output tokens: prefer `usage.outputTokens` event; fall back to
-    `countTokens(totalContent)` via tiktoken `cl100k_base`.
+    `countTokens(totalContent)` using a `Math.ceil(length / 4)` heuristic
+    (~4 chars/token). Approximation only — diverges from real BPE for code
+    and CJK/emoji text; feeds cost reporting on the fallback path.
 34. `calculateCost(model, usage)` from pi-mono. Fallback to zeros on error.
 
 ## Stop reason

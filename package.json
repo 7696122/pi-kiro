@@ -1,6 +1,6 @@
 {
   "name": "pi-kiro",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "keywords": ["pi-package"],
   "pi": {
@@ -24,16 +24,13 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build:js": "bun build src/extension.ts src/core.ts --outdir dist --target node --format esm --external '@mariozechner/*' --external 'js-tiktoken'",
+    "build:js": "bun build src/extension.ts src/core.ts --outdir dist --target node --format esm --external '@mariozechner/*'",
     "build:types": "tsc -p tsconfig.build.json",
     "build": "bun run clean && bun run build:js && bun run build:types",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepublishOnly": "bun run build"
-  },
-  "dependencies": {
-    "js-tiktoken": "^1.0.0"
   },
   "devDependencies": {
     "@types/bun": "latest",

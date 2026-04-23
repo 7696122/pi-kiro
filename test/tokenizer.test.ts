@@ -19,4 +19,10 @@ describe("countTokens", () => {
   it("handles unicode content", () => {
     expect(countTokens("héllo wörld")).toBeGreaterThan(0);
   });
+
+  it("applies ~4-chars-per-token heuristic", () => {
+    // Pins the divisor so a regression (e.g. /8 instead of /4) fails loudly.
+    expect(countTokens("a".repeat(16))).toBe(4);
+    expect(countTokens("a".repeat(17))).toBe(5); // Math.ceil
+  });
 });

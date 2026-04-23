@@ -1,15 +1,9 @@
-// js-tiktoken wrapper for output-token estimation.
-//
-// Kiro's streaming API doesn't reliably emit per-response output counts,
-// so we fall back to a tiktoken estimate over everything the assistant
-// emitted. `cl100k_base` is the standard Claude-family approximation.
-
-import { getEncoding } from "js-tiktoken";
-
-let encoder: ReturnType<typeof getEncoding> | null = null;
+// Output-token estimator used when Kiro's stream omits `outputTokens`
+// in its usage event. We use the standard ~4-chars-per-token heuristic
+// (Anthropic's own rough guidance) rather than a full BPE tokenizer,
+// since this value only feeds cost reporting on the fallback path.
 
 export function countTokens(text: string): number {
   if (!text) return 0;
-  if (!encoder) encoder = getEncoding("cl100k_base");
-  return encoder.encode(text).length;
+  return Math.ceil(text.length / 4);
 }
